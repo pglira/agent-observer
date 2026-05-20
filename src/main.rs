@@ -5,7 +5,7 @@ mod sessions;
 
 use config::Config;
 use gtk::prelude::*;
-use sessions::{focus_session, Session, TitleCache};
+use sessions::{focus_session, Session, TitleCache, Usage};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -109,7 +109,7 @@ fn main() {
         let provider = provider.clone();
         move || {
             let cfg_ref = cfg.borrow();
-            let sessions = cache.borrow_mut().scan();
+            let (sessions, usage) = cache.borrow_mut().scan();
 
             for child in row_box.children() {
                 row_box.remove(&child);
@@ -134,6 +134,16 @@ fn main() {
                     });
                 }
             }
+
+            // Rate-limit bars pinned to the far right (independent of sessions).
+            if cfg_ref.show_usage {
+                if let Some(u) = usage {
+                    if let Some(w) = build_usage(&u, &cfg_ref) {
+                        row_box.pack_end(&w, false, false, 10);
+                    }
+                }
+            }
+
             row_box.show_all();
 
             // Reload styling in case config was reloaded via the menu.
@@ -291,6 +301,97 @@ fn build_row(
     row
 }
 
+/// Build the far-right usage cluster: one horizontal bar per present window
+/// (5h, weekly). Returns `None` when there is nothing to show — no windows in
+/// the data, or the capture is older than `usage_max_age_secs`.
+fn build_usage(u: &Usage, cfg: &Config) -> Option<gtk::Widget> {
+    if cfg.usage_max_age_secs > 0
+        && u.captured_at > 0
+        && now_secs().saturating_sub(u.captured_at) > cfg.usage_max_age_secs
+    {
+        return None;
+    }
+
+    // Outer box fills the full bar height so its left border (the separator)
+    // spans top-to-bottom, matching the inter-session dividers. The bars sit in
+    // an inner, vertically-centered box.
+    let outer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    outer.style_context().add_class("usage-box");
+
+    let inner = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    inner.set_valign(gtk::Align::Center);
+
+    let mut any = false;
+    if let Some(w) = &u.rate_limits.five_hour {
+        inner.add(&build_usage_bar(&cfg.usage_label_5h, w.used_percentage, cfg));
+        any = true;
+    }
+    if let Some(w) = &u.rate_limits.seven_day {
+        inner.add(&build_usage_bar(&cfg.usage_label_7d, w.used_percentage, cfg));
+        any = true;
+    }
+
+    outer.add(&inner);
+    any.then(|| outer.upcast::<gtk::Widget>())
+}
+
+/// One labelled bar: `<label> [▓▓▓░░] NN%`. The fill is a fixed-width child of
+/// a track box; its CSS class (color) is chosen from the warn/crit thresholds.
+fn build_usage_bar(label: &str, pct: f64, cfg: &Config) -> gtk::Widget {
+    let pct = pct.clamp(0.0, 100.0);
+
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+    bar.set_valign(gtk::Align::Center);
+
+    let name = gtk::Label::new(None);
+    name.set_markup(&format!(
+        "<span size='small' alpha='65%'>{}</span>",
+        glib::markup_escape_text(label)
+    ));
+    bar.add(&name);
+
+    // Inset the track within the bar height, with a small floor for tiny bars.
+    let bar_h = (cfg.bar_height - 14).max(6);
+    let width = cfg.usage_bar_width.max(8);
+
+    let track = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    track.set_size_request(width, bar_h);
+    track.set_valign(gtk::Align::Center);
+    track.style_context().add_class("usage-track");
+
+    let fill_px = ((width as f64) * pct / 100.0).round() as i32;
+    let fill = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    fill.set_size_request(fill_px, bar_h);
+    fill.style_context().add_class("usage-fill");
+    fill.style_context().add_class(usage_level_class(pct, cfg));
+    track.pack_start(&fill, false, false, 0);
+    bar.add(&track);
+
+    let val = gtk::Label::new(None);
+    val.set_markup(&format!("<span size='small' alpha='80%'>{pct:.0}%</span>"));
+    bar.add(&val);
+
+    bar.upcast::<gtk::Widget>()
+}
+
+/// Pick the fill color class from the configured thresholds.
+fn usage_level_class(pct: f64, cfg: &Config) -> &'static str {
+    if pct >= cfg.usage_crit_pct {
+        "usage-high"
+    } else if pct >= cfg.usage_warn_pct {
+        "usage-med"
+    } else {
+        "usage-low"
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Render a session's label from the configurable `label_format` template.
 /// The template is Pango markup; substituted field VALUES are escaped, except
 /// `{dc}` (a pre-styled marker) and `{idx}` (a bracketed digit).
@@ -397,12 +498,18 @@ fn apply_css(provider: &gtk::CssProvider, cfg: &Config) {
          label {{ font-family: {family}; font-size: {size}pt; }}\n\
          .row:hover {{ background-color: alpha({text}, 0.10); }}\n\
          .divider {{ border-right: {sep_w}px solid {line}; }}\n\
+         .usage-box {{ border-left: {sep_w}px solid {line}; padding-left: 8px; }}\n\
          .empty {{ color: {unknown}; }}\n\
          .dot-busy {{ color: {busy}; }}\n\
          .dot-idle {{ color: {idle}; }}\n\
          .dot-waiting {{ color: {waiting}; }}\n\
          .dot-interrupted {{ color: {interrupted}; }}\n\
-         .dot-unknown {{ color: {unknown}; }}\n",
+         .dot-unknown {{ color: {unknown}; }}\n\
+         .usage-track {{ background-color: {usage_track}; border-radius: 2px; }}\n\
+         .usage-fill {{ border-radius: 2px; }}\n\
+         .usage-low {{ background-color: {usage_low}; }}\n\
+         .usage-med {{ background-color: {usage_med}; }}\n\
+         .usage-high {{ background-color: {usage_high}; }}\n",
         bg = c.background,
         text = c.text,
         family = family,
@@ -415,6 +522,10 @@ fn apply_css(provider: &gtk::CssProvider, cfg: &Config) {
         waiting = c.waiting,
         interrupted = c.interrupted,
         unknown = c.unknown,
+        usage_track = c.usage_track,
+        usage_low = c.usage_low,
+        usage_med = c.usage_med,
+        usage_high = c.usage_high,
     );
     if let Err(e) = provider.load_from_data(css.as_bytes()) {
         eprintln!("agent-observer: CSS error: {e}");

@@ -17,6 +17,35 @@ pub struct RegistryEntry {
     pub started_at: u64,
 }
 
+/// One rate-limit window from the usage file (the `resets_at` key is also
+/// present on disk but currently unused, so it is simply ignored).
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateWindow {
+    #[serde(default)]
+    pub used_percentage: f64,
+}
+
+/// The 5h + weekly windows; either may be absent (each is independently
+/// populated only after the relevant window has seen traffic).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RateLimits {
+    #[serde(default)]
+    pub five_hour: Option<RateWindow>,
+    #[serde(default)]
+    pub seven_day: Option<RateWindow>,
+}
+
+/// Account-wide rate-limit utilisation, deserialized straight from
+/// `~/.claude/agent-observer-usage.json` (written by the Claude Code status
+/// line). `captured_at` is 0 when absent and is then filled from file mtime.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Usage {
+    #[serde(default)]
+    pub rate_limits: RateLimits,
+    #[serde(default)]
+    pub captured_at: u64,
+}
+
 /// A resolved, displayable session.
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -72,17 +101,24 @@ impl TitleCache {
     /// Discover live interactive sessions by scanning every running `claude`
     /// process on the host — including ones inside containers, whose registry
     /// is read through `/proc/<pid>/root` + the process's own `$HOME`.
-    /// Returns sessions sorted: `waiting` first, then by start time.
-    pub fn scan(&mut self) -> Vec<Session> {
+    /// Returns sessions sorted: `waiting` first, then by start time, plus the
+    /// freshest rate-limit usage found across the discovered session homes.
+    pub fn scan(&mut self) -> (Vec<Session>, Option<Usage>) {
         let mut out = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
+        // (root, home) pairs to probe for a usage file. Our own home is always
+        // a candidate, so usage survives even when no session is detected.
+        let mut homes: HashSet<(String, String)> = HashSet::new();
+        if let Some(h) = dirs::home_dir() {
+            homes.insert((String::new(), h.to_string_lossy().into_owned()));
+        }
 
         // Resolve windows + active window once for focus highlighting.
         let wins = list_windows();
         let active = active_window_id();
 
         let Ok(read) = std::fs::read_dir("/proc") else {
-            return out;
+            return (out, read_best_usage(&homes));
         };
 
         for entry in read.flatten() {
@@ -103,6 +139,7 @@ impl TitleCache {
             let Some(home) = proc_home(pid) else { continue };
             let container_pid = proc_container_pid(pid).unwrap_or(pid);
             let root = format!("/proc/{pid}/root");
+            homes.insert((root.clone(), home.clone()));
 
             // <root><home>/.claude/sessions/<container_pid>.json
             let reg_path = PathBuf::from(format!(
@@ -148,7 +185,7 @@ impl TitleCache {
                 .cmp(&rank(&b.status))
                 .then(a.started_at.cmp(&b.started_at))
         });
-        out
+        (out, read_best_usage(&homes))
     }
 
     fn title_for(&mut self, root: &str, home: &str, reg: &RegistryEntry) -> Option<String> {
@@ -166,6 +203,36 @@ impl TitleCache {
             .insert(reg.session_id.clone(), (mtime, title.clone()));
         title
     }
+}
+
+/// Read the usage file under each candidate home and return the freshest one.
+/// The file is account-wide, so the most recently captured render wins — i.e.
+/// the session you were last actively driving. Falls back to file mtime when
+/// the `captured_at` field is missing.
+fn read_best_usage(homes: &HashSet<(String, String)>) -> Option<Usage> {
+    let mut best: Option<Usage> = None;
+    for (root, home) in homes {
+        let path =
+            PathBuf::from(format!("{root}{home}/.claude/agent-observer-usage.json"));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut usage) = serde_json::from_str::<Usage>(&text) else {
+            continue;
+        };
+        if usage.captured_at == 0 {
+            usage.captured_at = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+        }
+        if best.as_ref().is_none_or(|b| usage.captured_at >= b.captured_at) {
+            best = Some(usage);
+        }
+    }
+    best
 }
 
 /// `$HOME` of a process from its environ (readable when we own the process).

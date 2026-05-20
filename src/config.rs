@@ -31,6 +31,24 @@ pub struct Config {
     /// Pulse the status dot of `busy` sessions.
     pub pulse_busy: bool,
 
+    /// Show the 5h / weekly rate-limit bars on the far right of the bar.
+    /// Requires the Claude Code status line to emit `rate_limits` to
+    /// `~/.claude/agent-observer-usage.json` (see install.sh / statusline).
+    pub show_usage: bool,
+    /// Width in px of each usage bar's track.
+    pub usage_bar_width: i32,
+    /// Label drawn before the 5-hour bar.
+    pub usage_label_5h: String,
+    /// Label drawn before the 7-day (weekly) bar.
+    pub usage_label_7d: String,
+    /// Fill switches to `usage_med` at/above this percentage.
+    pub usage_warn_pct: f64,
+    /// Fill switches to `usage_high` at/above this percentage.
+    pub usage_crit_pct: f64,
+    /// Hide the bars if the captured data is older than this many seconds
+    /// (0 = never hide, always show the last-known values).
+    pub usage_max_age_secs: u64,
+
     /// Status -> color (any CSS color string).
     pub colors: Colors,
     /// Two-step jump shortcut.
@@ -53,6 +71,14 @@ pub struct Colors {
     pub focused: String,
     /// Bottom line AND inter-session separator color.
     pub line: String,
+    /// Empty (background) part of a usage bar.
+    pub usage_track: String,
+    /// Usage-bar fill below `usage_warn_pct`.
+    pub usage_low: String,
+    /// Usage-bar fill at/above `usage_warn_pct`.
+    pub usage_med: String,
+    /// Usage-bar fill at/above `usage_crit_pct`.
+    pub usage_high: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,8 +103,12 @@ impl Default for Colors {
             unknown: "#6e7681".into(),     // dim grey
             background: "#0d1117".into(),
             text: "#e6edf3".into(),
-            focused: "#f2cc60".into(), // yellow
-            line: "#2f81f7".into(),    // blue
+            focused: "#f2cc60".into(),     // yellow
+            line: "#2f81f7".into(),        // blue
+            usage_track: "#30363d".into(), // dim grey
+            usage_low: "#3fb950".into(),   // green
+            usage_med: "#e3b341".into(),   // amber
+            usage_high: "#f85149".into(),  // red
         }
     }
 }
@@ -108,6 +138,13 @@ impl Default for Config {
                     .into(),
             max_title_len: 60,
             pulse_busy: true,
+            show_usage: true,
+            usage_bar_width: 70,
+            usage_label_5h: "5h".into(),
+            usage_label_7d: "wk".into(),
+            usage_warn_pct: 50.0,
+            usage_crit_pct: 80.0,
+            usage_max_age_secs: 0,
             colors: Colors::default(),
             shortcut: Shortcut::default(),
         }
@@ -162,6 +199,16 @@ impl Config {
          # bottom_line_width / separator_width : thickness in px\n\
          # shortcut.prefix: press it, then 1..9/0 to jump. GLOBAL grab \u{2014}\n\
          #                  change it if it clashes with tmux's ctrl+b.\n\
+         #\n\
+         # Usage bars (far right): 5h + weekly rate-limit utilisation, fed by the\n\
+         # Claude Code status line writing ~/.claude/agent-observer-usage.json.\n\
+         #   show_usage         : master on/off toggle\n\
+         #   usage_bar_width    : px width of each bar's track\n\
+         #   usage_label_5h/7d  : text drawn before each bar\n\
+         #   usage_warn_pct     : fill turns colors.usage_med at/above this %\n\
+         #   usage_crit_pct     : fill turns colors.usage_high at/above this %\n\
+         #   usage_max_age_secs : hide bars if data older than this (0 = never)\n\
+         #   colors.usage_track/usage_low/usage_med/usage_high : bar colors\n\
          \n"
     }
 }
