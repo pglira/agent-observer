@@ -13,6 +13,26 @@ mkdir -p "$HOME/.local/bin"
 install -m 0755 target/release/agent-observer "$BIN"
 echo "==> installed $BIN"
 
+# Application-menu entry (so you can relaunch from the start menu after closing).
+APPS_DIR="$HOME/.local/share/applications"
+mkdir -p "$APPS_DIR"
+cat > "$APPS_DIR/agent-observer.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=agent-observer
+Comment=Overview of ongoing Claude Code sessions
+Exec=$BIN
+Icon=utilities-system-monitor
+Terminal=false
+StartupNotify=false
+Categories=Utility;
+EOF
+echo "==> installed menu entry $APPS_DIR/agent-observer.desktop"
+# Refresh the menu database if the tool is available (ignore if not).
+update-desktop-database "$APPS_DIR" 2>/dev/null || true
+
+# Autostart entry (launches on login). Reuses the menu entry plus the
+# autostart-enabled flag.
 AUTOSTART_DIR="$HOME/.config/autostart"
 mkdir -p "$AUTOSTART_DIR"
 cat > "$AUTOSTART_DIR/agent-observer.desktop" <<EOF

@@ -171,10 +171,23 @@ fn parse_combo(s: &str) -> Option<(ModMask, u32)> {
 
 fn key_to_keysym(key: &str) -> Option<u32> {
     let lower = key.to_lowercase();
+
+    // Named non-printable keys (X11 keysyms). Lets the prefix be a bare modifier
+    // like "super" (press the Windows/Super key alone) or other special keys.
+    match lower.as_str() {
+        "super" | "win" | "super_l" | "mod4" | "cmd" => return Some(0xffeb), // Super_L
+        "super_r" => return Some(0xffec),
+        "space" => return Some(0x0020),
+        "return" | "enter" => return Some(0xff0d),
+        "tab" => return Some(0xff09),
+        "escape" | "esc" => return Some(0xff1b),
+        _ => {}
+    }
+
     let mut chars = lower.chars();
     let c = chars.next()?;
     if chars.next().is_some() {
-        return None; // only single-character keys supported
+        return None; // only single-character keys (or the named keys above)
     }
     if c.is_ascii_graphic() {
         Some(c as u32) // Latin-1 keysyms equal ASCII for printable range

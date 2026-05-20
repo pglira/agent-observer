@@ -88,6 +88,8 @@ pub struct Shortcut {
     pub enabled: bool,
     /// Prefix key. Press it, then a digit 1..9/0 to jump to that session.
     /// Format: "mod+mod+key", mods = ctrl|shift|alt|super, e.g. "ctrl+b".
+    /// The key may itself be a bare modifier — set it to "super" to use the
+    /// Windows/Super key alone as the prefix.
     /// NOTE: this is a GLOBAL grab — if you live in tmux, "ctrl+b" will be
     /// captured here instead of by tmux. Pick something free like "super+c".
     pub prefix: String,
