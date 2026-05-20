@@ -1,0 +1,4 @@
+/target
+
+# Claude Code / agent tooling state (not part of the application)
+.claude/

@@ -1,0 +1,167 @@
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// User configuration, loaded from `~/.config/agent-observer/config.toml`.
+/// The file is auto-created with these defaults on first run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    /// Bar height in pixels (also the reserved strut size).
+    pub bar_height: i32,
+    /// How often to re-scan the session registry, in seconds.
+    pub poll_interval_secs: u64,
+
+    /// Thickness of the line drawn along the bottom of the bar, in pixels.
+    pub bottom_line_width: i32,
+    /// Width of the separator drawn between sessions, in pixels.
+    pub separator_width: i32,
+
+    /// Font family for row labels, e.g. "Sans", "JetBrains Mono".
+    pub font_family: String,
+    /// Font size in points.
+    pub font_size: u32,
+
+    /// What is shown per session. Pango markup; field VALUES are auto-escaped.
+    /// Placeholders: {idx} {project} {title} {status} {uptime} {pid} {cwd} {dc}
+    ///   {idx} = jump number (1..9, 0 for the 10th; empty beyond)
+    ///   {dc}  = devcontainer marker (pre-styled, empty for host sessions)
+    pub label_format: String,
+    /// Truncate the {title} field to this many characters.
+    pub max_title_len: usize,
+    /// Pulse the status dot of `busy` sessions.
+    pub pulse_busy: bool,
+
+    /// Status -> color (any CSS color string).
+    pub colors: Colors,
+    /// Two-step jump shortcut.
+    pub shortcut: Shortcut,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Colors {
+    pub busy: String,
+    pub idle: String,
+    pub waiting: String,
+    pub interrupted: String,
+    pub unknown: String,
+    /// Bar background color.
+    pub background: String,
+    /// Row text color.
+    pub text: String,
+    /// {project} color of the currently-focused session.
+    pub focused: String,
+    /// Bottom line AND inter-session separator color.
+    pub line: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Shortcut {
+    /// Enable the global two-step jump shortcut.
+    pub enabled: bool,
+    /// Prefix key. Press it, then a digit 1..9/0 to jump to that session.
+    /// Format: "mod+mod+key", mods = ctrl|shift|alt|super, e.g. "ctrl+b".
+    /// NOTE: this is a GLOBAL grab — if you live in tmux, "ctrl+b" will be
+    /// captured here instead of by tmux. Pick something free like "super+c".
+    pub prefix: String,
+}
+
+impl Default for Colors {
+    fn default() -> Self {
+        Colors {
+            busy: "#3fb950".into(),        // green
+            idle: "#8b949e".into(),        // grey
+            waiting: "#e3b341".into(),     // amber
+            interrupted: "#f85149".into(), // red
+            unknown: "#6e7681".into(),     // dim grey
+            background: "#0d1117".into(),
+            text: "#e6edf3".into(),
+            focused: "#f2cc60".into(), // yellow
+            line: "#2f81f7".into(),    // blue
+        }
+    }
+}
+
+impl Default for Shortcut {
+    fn default() -> Self {
+        Shortcut {
+            enabled: true,
+            prefix: "ctrl+b".into(),
+        }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            bar_height: 30,
+            poll_interval_secs: 1,
+            bottom_line_width: 5,
+            separator_width: 5,
+            font_family: "Sans".into(),
+            font_size: 10,
+            label_format:
+                "<span size='small' alpha='45%'>{idx}</span>  \
+                 <b>{project}</b>{dc}  \
+                 <span size='small' alpha='65%'>{title}</span>"
+                    .into(),
+            max_title_len: 60,
+            pulse_busy: true,
+            colors: Colors::default(),
+            shortcut: Shortcut::default(),
+        }
+    }
+}
+
+impl Config {
+    pub fn config_path() -> PathBuf {
+        let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+        base.join("agent-observer").join("config.toml")
+    }
+
+    /// Load config, creating the file with defaults if it does not exist.
+    /// On any parse error, falls back to defaults (and logs to stderr).
+    pub fn load() -> Config {
+        let path = Self::config_path();
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            match toml::from_str::<Config>(&text) {
+                Ok(cfg) => return cfg,
+                Err(e) => {
+                    eprintln!("agent-observer: config parse error ({e}); using defaults");
+                    return Config::default();
+                }
+            }
+        }
+        let cfg = Config::default();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(text) = toml::to_string_pretty(&cfg) {
+            let _ = std::fs::write(&path, format!("{}{}", Self::header_comment(), text));
+        }
+        cfg
+    }
+
+    /// Comment block prepended to a freshly-generated config file.
+    fn header_comment() -> &'static str {
+        "# agent-observer configuration\n\
+         #\n\
+         # label_format placeholders (Pango markup; field VALUES are auto-escaped):\n\
+         #   {idx}     jump number in square brackets, e.g. [1] (empty past the 10th)\n\
+         #   {project} session project (cwd basename)\n\
+         #   {title}   AI title / last prompt (truncated to max_title_len)\n\
+         #   {status}  busy | idle | waiting | interrupted\n\
+         #   {uptime}  session uptime, e.g. 12m, 3h04m\n\
+         #   {pid}     host process id\n\
+         #   {cwd}     full working directory\n\
+         #   {dc}      devcontainer marker (empty for host sessions)\n\
+         #\n\
+         # colors.focused : {project} color of the currently-focused session\n\
+         # colors.line    : bottom line AND the inter-session separators\n\
+         # bottom_line_width / separator_width : thickness in px\n\
+         # shortcut.prefix: press it, then 1..9/0 to jump. GLOBAL grab \u{2014}\n\
+         #                  change it if it clashes with tmux's ctrl+b.\n\
+         \n"
+    }
+}
