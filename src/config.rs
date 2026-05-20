@@ -20,6 +20,8 @@ pub struct Config {
     pub font_family: String,
     /// Font size in points.
     pub font_size: u32,
+    /// Diameter in pixels of the status dot (the circle before each session).
+    pub status_dot_size: u32,
 
     /// What is shown per session. Pango markup; field VALUES are auto-escaped.
     /// Placeholders: {idx} {project} {title} {status} {uptime} {pid} {cwd} {dc}
@@ -133,6 +135,7 @@ impl Default for Config {
             separator_width: 5,
             font_family: "Sans".into(),
             font_size: 10,
+            status_dot_size: 10,
             label_format:
                 "<span size='small' alpha='45%'>{idx}</span>  \
                  <b>{project}</b>{dc}  \
@@ -196,6 +199,7 @@ impl Config {
          #   {cwd}     full working directory\n\
          #   {dc}      devcontainer marker (empty for host sessions)\n\
          #\n\
+         # status_dot_size : diameter in px of the status circle before each session\n\
          # colors.focused : {project} color of the currently-focused session\n\
          # colors.line    : bottom line AND the inter-session separators\n\
          # bottom_line_width / separator_width : thickness in px\n\

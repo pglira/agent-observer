@@ -261,8 +261,31 @@ fn build_row(
     hbox.set_margin_start(8);
     hbox.set_margin_end(8);
 
-    let dot = gtk::Label::new(Some("\u{25CF}")); // ●
-    dot.style_context().add_class(dot_class(&s.status));
+    // Draw the status dot with cairo rather than as a `●` glyph: a glyph is
+    // baseline-positioned inside its font line box, so it can't be made to sit
+    // dead-center in the bar. A fixed-size DrawingArea with valign Center is
+    // strictly centered, and the circle is drawn centered within it.
+    let diam = cfg.status_dot_size.max(1) as i32;
+    let dot = gtk::DrawingArea::new();
+    dot.set_size_request(diam, diam);
+    dot.set_valign(gtk::Align::Center);
+    let rgba = status_color(&s.status, cfg)
+        .parse::<gdk::RGBA>()
+        .unwrap_or_else(|_| gdk::RGBA::new(0.5, 0.5, 0.5, 1.0));
+    dot.connect_draw(move |w, cr| {
+        let alloc = w.allocation();
+        let r = (alloc.width().min(alloc.height()) as f64) / 2.0;
+        cr.arc(
+            alloc.width() as f64 / 2.0,
+            alloc.height() as f64 / 2.0,
+            r,
+            0.0,
+            std::f64::consts::TAU,
+        );
+        cr.set_source_rgba(rgba.red(), rgba.green(), rgba.blue(), rgba.alpha());
+        let _ = cr.fill();
+        glib::Propagation::Proceed
+    });
     hbox.add(&dot);
     if s.status == "busy" {
         busy_dots.borrow_mut().push(dot.upcast::<gtk::Widget>());
@@ -475,13 +498,14 @@ fn render_template(fmt: &str, lookup: impl Fn(&str) -> Option<String>) -> String
     out
 }
 
-fn dot_class(status: &str) -> &'static str {
+/// The configured color for a session status (used to fill the status dot).
+fn status_color<'a>(status: &str, cfg: &'a Config) -> &'a str {
     match status {
-        "busy" => "dot-busy",
-        "idle" => "dot-idle",
-        "waiting" => "dot-waiting",
-        "interrupted" => "dot-interrupted",
-        _ => "dot-unknown",
+        "busy" => &cfg.colors.busy,
+        "idle" => &cfg.colors.idle,
+        "waiting" => &cfg.colors.waiting,
+        "interrupted" => &cfg.colors.interrupted,
+        _ => &cfg.colors.unknown,
     }
 }
 
@@ -500,11 +524,6 @@ fn apply_css(provider: &gtk::CssProvider, cfg: &Config) {
          .divider {{ border-right: {sep_w}px solid {line}; }}\n\
          .usage-box {{ border-left: {sep_w}px solid {line}; padding-left: 8px; }}\n\
          .empty {{ color: {unknown}; }}\n\
-         .dot-busy {{ color: {busy}; }}\n\
-         .dot-idle {{ color: {idle}; }}\n\
-         .dot-waiting {{ color: {waiting}; }}\n\
-         .dot-interrupted {{ color: {interrupted}; }}\n\
-         .dot-unknown {{ color: {unknown}; }}\n\
          .usage-track {{ background-color: {usage_track}; border-radius: 2px; }}\n\
          .usage-fill {{ border-radius: 2px; }}\n\
          .usage-low {{ background-color: {usage_low}; }}\n\
@@ -517,10 +536,6 @@ fn apply_css(provider: &gtk::CssProvider, cfg: &Config) {
         line = c.line,
         line_w = cfg.bottom_line_width.max(0),
         sep_w = cfg.separator_width.max(0),
-        busy = c.busy,
-        idle = c.idle,
-        waiting = c.waiting,
-        interrupted = c.interrupted,
         unknown = c.unknown,
         usage_track = c.usage_track,
         usage_low = c.usage_low,
