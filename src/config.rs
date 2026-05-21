@@ -61,6 +61,8 @@ pub struct Config {
     pub colors: Colors,
     /// Two-step jump shortcut.
     pub shortcut: Shortcut,
+    /// Sound played when a session finishes / needs you.
+    pub beep: Beep,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +89,17 @@ pub struct Colors {
     pub usage_med: String,
     /// Usage-bar fill at/above `usage_crit_pct`.
     pub usage_high: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Beep {
+    /// Play `command` when a session transitions from busy to idle ("done")
+    /// or to waiting ("needs your input").
+    pub enabled: bool,
+    /// Shell command run (via `sh -c`) to make the sound. Failures are ignored,
+    /// so an unavailable player is harmless.
+    pub command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +132,15 @@ impl Default for Colors {
             usage_low: "#3fb950".into(),   // green
             usage_med: "#e3b341".into(),   // amber
             usage_high: "#f85149".into(),  // red
+        }
+    }
+}
+
+impl Default for Beep {
+    fn default() -> Self {
+        Beep {
+            enabled: true,
+            command: "paplay /usr/share/sounds/freedesktop/stereo/complete.oga".into(),
         }
     }
 }
@@ -160,6 +182,7 @@ impl Default for Config {
             usage_max_age_secs: 0,
             colors: Colors::default(),
             shortcut: Shortcut::default(),
+            beep: Beep::default(),
         }
     }
 }
@@ -215,6 +238,9 @@ impl Config {
          # line_width / separator_width : thickness in px\n\
          # shortcut.prefix: press it, then 1..9/0 to jump. GLOBAL grab \u{2014}\n\
          #                  change it if it clashes with tmux's ctrl+b.\n\
+         # beep.enabled   : play beep.command when a session finishes a turn\n\
+         #                  (busy\u{2192}idle) or starts waiting for input (busy\u{2192}waiting)\n\
+         # beep.command   : shell command for the sound (e.g. paplay <file>)\n\
          #\n\
          # Usage bars (far right): 5h + weekly rate-limit utilisation, fed by the\n\
          # Claude Code status line writing ~/.claude/agent-observer-usage.json.\n\

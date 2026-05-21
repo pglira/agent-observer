@@ -7,6 +7,7 @@ use config::Config;
 use gtk::prelude::*;
 use sessions::{focus_session, Session, TitleCache, Usage};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -107,6 +108,8 @@ fn main() {
     let busy_dots: Rc<RefCell<Vec<gtk::Widget>>> = Rc::new(RefCell::new(Vec::new()));
     // Sessions in displayed order, for the jump shortcut.
     let nav: Rc<RefCell<Vec<NavTarget>>> = Rc::new(RefCell::new(Vec::new()));
+    // Last-seen status per session id, to beep on busy -> idle/waiting transitions.
+    let prev_status: Rc<RefCell<HashMap<String, String>>> = Rc::new(RefCell::new(HashMap::new()));
 
     let rebuild = {
         let row_box = row_box.clone();
@@ -117,9 +120,12 @@ fn main() {
         let provider = provider.clone();
         let window = window.clone();
         let apply_geometry = apply_geometry.clone();
+        let prev_status = prev_status.clone();
         move || {
             let cfg_ref = cfg.borrow();
             let (sessions, usage) = cache.borrow_mut().scan();
+
+            beep_on_transitions(&cfg_ref.beep, &sessions, &mut prev_status.borrow_mut());
 
             for child in row_box.children() {
                 row_box.remove(&child);
@@ -649,4 +655,47 @@ fn window_xid(window: &gtk::Window) -> Option<u32> {
         .window()
         .and_then(|w| w.downcast::<gdkx11::X11Window>().ok())
         .map(|x11| x11.xid() as u32)
+}
+
+/// Play `beep.command` once if any session just transitioned from `busy` to
+/// `idle` ("done") or `waiting` ("needs input"). `prev` is updated in place to
+/// the current statuses (pruning sessions that have gone away) — even while
+/// disabled, so re-enabling can't beep on a stale transition; the first time a
+/// session is seen it can't beep either, only genuine transitions do.
+fn beep_on_transitions(
+    beep_cfg: &config::Beep,
+    sessions: &[Session],
+    prev: &mut HashMap<String, String>,
+) {
+    let mut fire = false;
+    let mut current = HashMap::with_capacity(sessions.len());
+    for s in sessions {
+        let was_busy = prev.get(&s.session_id).map(String::as_str) == Some("busy");
+        fire |= was_busy && matches!(s.status.as_str(), "idle" | "waiting");
+        current.insert(s.session_id.clone(), s.status.clone());
+    }
+    *prev = current;
+    if fire && beep_cfg.enabled {
+        beep(&beep_cfg.command);
+    }
+}
+
+/// Run a shell command for its sound, off the main loop. A short-lived thread
+/// waits on the child (so it is reaped, no zombies) then exits; the GTK loop
+/// never blocks and failures (e.g. no audio player) are ignored.
+fn beep(command: &str) {
+    let command = command.trim().to_string();
+    if command.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        use std::process::{Command, Stdio};
+        let _ = Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    });
 }

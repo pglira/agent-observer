@@ -51,7 +51,6 @@ pub struct Usage {
 pub struct Session {
     /// Host-side pid of the `claude` process (used for click-to-focus).
     pub host_pid: i32,
-    #[allow(dead_code)]
     pub session_id: String,
     pub cwd: String,
     pub status: String,
