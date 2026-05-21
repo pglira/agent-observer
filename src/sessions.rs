@@ -135,6 +135,13 @@ impl TitleCache {
                 _ => continue,
             }
 
+            // Skip processes that can't be a usable session even though they
+            // still exist: stopped (T — e.g. a claude orphaned to init when its
+            // editor/terminal window closed), zombie (Z) or dead (X).
+            if matches!(proc_state(pid), Some('T') | Some('Z') | Some('X')) {
+                continue;
+            }
+
             let Some(home) = proc_home(pid) else { continue };
             let container_pid = proc_container_pid(pid).unwrap_or(pid);
             let root = format!("/proc/{pid}/root");
@@ -452,11 +459,20 @@ fn activate(winid: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Parent pid from `/proc/<pid>/stat`, robust to spaces/parens in comm.
-fn parent_pid(pid: i32) -> Option<i32> {
+/// The `/proc/<pid>/stat` fields after the "(comm)" — i.e. starting at `state`
+/// (`state ppid pgrp …`). Splitting on the last ')' is robust to spaces and
+/// parens inside comm, which is the whole reason both callers go through here.
+fn proc_stat_after_comm(pid: i32) -> Option<String> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after = &text[text.rfind(')')? + 1..]; // skip "(comm)"
-    let mut it = after.split_whitespace();
-    let _state = it.next()?;
-    it.next()?.parse::<i32>().ok()
+    Some(text[text.rfind(')')? + 1..].trim_start().to_owned())
+}
+
+/// Parent pid from `/proc/<pid>/stat` (the field after `state`).
+fn parent_pid(pid: i32) -> Option<i32> {
+    proc_stat_after_comm(pid)?.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Process state char from `/proc/<pid>/stat` (e.g. 'R', 'S', 'T', 'Z').
+fn proc_state(pid: i32) -> Option<char> {
+    proc_stat_after_comm(pid)?.split_whitespace().next()?.chars().next()
 }
