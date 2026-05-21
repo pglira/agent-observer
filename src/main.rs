@@ -26,7 +26,7 @@ fn main() {
 
     let cfg = Rc::new(RefCell::new(Config::load()));
 
-    // Screen geometry (primary monitor, top edge).
+    // Screen geometry (primary monitor); the bar docks to the top or bottom edge.
     let display = gdk::Display::default().expect("no display");
     let monitor = display
         .primary_monitor()
@@ -35,6 +35,8 @@ fn main() {
     let geo = monitor.geometry();
     let screen_w = geo.width();
     let geo_x = geo.x();
+    let geo_y = geo.y();
+    let geo_h = geo.height();
 
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.set_title("agent-observer");
@@ -71,25 +73,31 @@ fn main() {
     row_box.set_size_request(screen_w, height);
     window.add(&row_box);
 
-    // Apply bar_height to the window + reserved strut. Re-runnable so a config
-    // reload can change the height (not just a restart). Safe to call only once
-    // the window is realized (after show_all), which is when the X id exists.
+    // Apply size, position and reserved strut to the bar. Re-runnable so a
+    // config reload can change height/position (not just a restart). Acts only
+    // while the bar is visible — rebuild calls it right after showing the window
+    // (visible ⟹ realized, so the X window id needed for the strut exists).
     let apply_geometry = {
         let window = window.clone();
         let row_box = row_box.clone();
         let cfg = cfg.clone();
         move || {
-            let h = cfg.borrow().bar_height;
+            if !window.is_visible() {
+                return;
+            }
+            let (h, bottom) = {
+                let c = cfg.borrow();
+                (c.bar_height, is_bottom(&c))
+            };
+            let y = if bottom { geo_y + geo_h - h } else { geo_y };
             window.set_size_request(screen_w, h);
             row_box.set_size_request(screen_w, h);
             window.resize(screen_w, h);
-            match window.window().and_then(|w| w.downcast::<gdkx11::X11Window>().ok()) {
-                Some(x11) => {
-                    if let Err(e) = set_top_strut(x11.xid() as u32, h, screen_w, geo_x) {
-                        eprintln!("agent-observer: could not set strut: {e}");
-                    }
+            window.move_(geo_x, y);
+            if let Some(xid) = window_xid(&window) {
+                if let Err(e) = set_strut(xid, h, screen_w, geo_x, bottom) {
+                    eprintln!("agent-observer: could not set strut: {e}");
                 }
-                None => eprintln!("agent-observer: no X11 window; strut skipped"),
             }
         }
     };
@@ -107,6 +115,8 @@ fn main() {
         let busy_dots = busy_dots.clone();
         let nav = nav.clone();
         let provider = provider.clone();
+        let window = window.clone();
+        let apply_geometry = apply_geometry.clone();
         move || {
             let cfg_ref = cfg.borrow();
             let (sessions, usage) = cache.borrow_mut().scan();
@@ -116,6 +126,18 @@ fn main() {
             }
             busy_dots.borrow_mut().clear();
             nav.borrow_mut().clear();
+
+            // When configured, hide the whole bar (and release its reserved
+            // strut) while no sessions run, so the screen edge is given back.
+            if cfg_ref.hide_when_empty && sessions.is_empty() {
+                if window.is_visible() {
+                    if let Some(xid) = window_xid(&window) {
+                        let _ = set_strut(xid, 0, screen_w, geo_x, false);
+                    }
+                    window.hide();
+                }
+                return;
+            }
 
             if sessions.is_empty() {
                 let empty = gtk::Label::new(Some("No active Claude sessions"));
@@ -145,6 +167,13 @@ fn main() {
             }
 
             row_box.show_all();
+
+            // Bring the bar back (and re-reserve its strut) if it had been
+            // hidden while empty. apply_geometry also (re)applies size/position.
+            if !window.is_visible() {
+                window.show();
+                apply_geometry();
+            }
 
             // Reload styling in case config was reloaded via the menu.
             apply_css(&provider, &cfg_ref);
@@ -212,11 +241,9 @@ fn main() {
         glib::Propagation::Proceed
     });
 
-    window.show_all();
-    window.move_(geo.x(), geo.y());
-
-    // Now that the X window is realized, size it and reserve the top strut.
-    apply_geometry();
+    // Visibility (and the strut/geometry that go with it) is owned by `rebuild`,
+    // which was already called once above: it shows + struts the bar when there
+    // are sessions, and leaves it hidden when empty (if hide_when_empty).
 
     // Global two-step jump shortcut: prefix, then a digit.
     {
@@ -514,11 +541,14 @@ fn apply_css(provider: &gtk::CssProvider, cfg: &Config) {
     let c = &cfg.colors;
     let family = &cfg.font_family;
     let size = cfg.font_size;
+    // The line faces the screen interior: bottom of a top-docked bar, top of a
+    // bottom-docked one.
+    let edge = if is_bottom(cfg) { "top" } else { "bottom" };
     let css = format!(
         "window {{ background-color: {bg}; }}\n\
          /* No text `color` here on purpose: the base color is applied via Pango\n\
             markup in render_label so the focused-name color can override it. */\n\
-         #rowbox {{ background-color: {bg}; border-bottom: {line_w}px solid {line}; }}\n\
+         #rowbox {{ background-color: {bg}; border-{edge}: {line_w}px solid {line}; }}\n\
          label {{ font-family: {family}; font-size: {size}pt; }}\n\
          .row:hover {{ background-color: alpha({text}, 0.10); }}\n\
          .divider {{ border-right: {sep_w}px solid {line}; }}\n\
@@ -536,6 +566,7 @@ fn apply_css(provider: &gtk::CssProvider, cfg: &Config) {
         line = c.line,
         line_w = cfg.bottom_line_width.max(0),
         sep_w = cfg.separator_width.max(0),
+        edge = edge,
         unknown = c.unknown,
         usage_track = c.usage_track,
         usage_low = c.usage_low,
@@ -565,12 +596,14 @@ fn show_menu(ev: &gdk::EventButton, reload: &(impl Fn() + 'static + Clone)) {
     menu.popup_at_pointer(Some(ev));
 }
 
-/// Set `_NET_WM_STRUT` / `_NET_WM_STRUT_PARTIAL` so the WM reserves the top edge.
-fn set_top_strut(
+/// Reserve `height` px on the top (or bottom, if `bottom`) screen edge via
+/// `_NET_WM_STRUT` / `_NET_WM_STRUT_PARTIAL`. A `height` of 0 frees the space.
+fn set_strut(
     xid: u32,
     height: i32,
     width: i32,
     x0: i32,
+    bottom: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, PropMode};
     use x11rb::wrapper::ConnectionExt as _;
@@ -580,8 +613,10 @@ fn set_top_strut(
     let strut_partial = conn.intern_atom(false, b"_NET_WM_STRUT_PARTIAL")?.reply()?.atom;
 
     let h = height.max(0) as u32;
+    let (top, bot) = if bottom { (0, h) } else { (h, 0) };
+
     // left, right, top, bottom
-    let s = [0u32, 0, h, 0];
+    let s = [0u32, 0, top, bot];
     // `.check()` round-trips so the request is processed before this short-lived
     // connection is dropped — otherwise a reload's update can be lost in the race.
     conn.change_property32(PropMode::REPLACE, xid, strut, AtomEnum::CARDINAL, &s)?
@@ -591,9 +626,27 @@ fn set_top_strut(
     let end = (x0 + width - 1).max(0) as u32;
     // left, right, top, bottom, l_start_y, l_end_y, r_start_y, r_end_y,
     // top_start_x, top_end_x, bottom_start_x, bottom_end_x
-    let sp = [0u32, 0, h, 0, 0, 0, 0, 0, start, end, 0, 0];
+    let mut sp = [0u32; 12];
+    sp[2] = top;
+    sp[3] = bot;
+    let (sx, ex) = if bottom { (10, 11) } else { (8, 9) };
+    sp[sx] = start;
+    sp[ex] = end;
     conn.change_property32(PropMode::REPLACE, xid, strut_partial, AtomEnum::CARDINAL, &sp)?
         .check()?;
 
     Ok(())
+}
+
+/// Whether the bar is configured to dock to the bottom edge (default: top).
+fn is_bottom(cfg: &Config) -> bool {
+    cfg.position.eq_ignore_ascii_case("bottom")
+}
+
+/// The X11 window id of a realized GTK window, if it has one.
+fn window_xid(window: &gtk::Window) -> Option<u32> {
+    window
+        .window()
+        .and_then(|w| w.downcast::<gdkx11::X11Window>().ok())
+        .map(|x11| x11.xid() as u32)
 }

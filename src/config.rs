@@ -8,6 +8,11 @@ use std::path::PathBuf;
 pub struct Config {
     /// Bar height in pixels (also the reserved strut size).
     pub bar_height: i32,
+    /// Screen edge to dock the bar to: "top" or "bottom".
+    pub position: String,
+    /// Hide the bar entirely (and free its reserved space) when no Claude
+    /// sessions are running; show it again as soon as one appears.
+    pub hide_when_empty: bool,
     /// How often to re-scan the session registry, in seconds.
     pub poll_interval_secs: u64,
 
@@ -130,6 +135,8 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             bar_height: 30,
+            position: "top".into(),
+            hide_when_empty: true,
             poll_interval_secs: 1,
             bottom_line_width: 5,
             separator_width: 5,
@@ -199,6 +206,8 @@ impl Config {
          #   {cwd}     full working directory\n\
          #   {dc}      devcontainer marker (empty for host sessions)\n\
          #\n\
+         # position        : dock the bar to the \"top\" or \"bottom\" screen edge\n\
+         # hide_when_empty : hide the bar (freeing its space) when no sessions run\n\
          # status_dot_size : diameter in px of the status circle before each session\n\
          # colors.focused : {project} color of the currently-focused session\n\
          # colors.line    : bottom line AND the inter-session separators\n\
