@@ -30,9 +30,10 @@ pub struct Config {
     pub status_dot_size: u32,
 
     /// What is shown per session. Pango markup; field VALUES are auto-escaped.
-    /// Placeholders: {idx} {project} {title} {status} {uptime} {pid} {cwd} {dc}
-    ///   {idx} = jump number (1..9, 0 for the 10th; empty beyond)
-    ///   {dc}  = devcontainer marker (pre-styled, empty for host sessions)
+    /// Placeholders: {idx} {project} {title} {status} {uptime} {pid} {cwd} {dc} {host}
+    ///   {idx}  = jump number (1..9, 0 for the 10th; empty beyond)
+    ///   {dc}   = devcontainer marker (pre-styled, empty for host sessions)
+    ///   {host} = remote host marker "@host" (pre-styled, empty for local)
     pub label_format: String,
     /// Truncate the {title} field to this many characters.
     pub max_title_len: usize,
@@ -63,6 +64,8 @@ pub struct Config {
     pub shortcut: Shortcut,
     /// Sound played when a session finishes / needs you.
     pub beep: Beep,
+    /// Discovery of sessions running on remote hosts over SSH.
+    pub remote: Remote,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +117,36 @@ pub struct Shortcut {
     /// NOTE: this is a GLOBAL grab — if you live in tmux, "ctrl+b" will be
     /// captured here instead of by tmux. Pick something free like "super+c".
     pub prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Remote {
+    /// Master switch for discovering Claude sessions on remote hosts via SSH
+    /// (VS Code Remote-SSH, optionally into a devcontainer on that host).
+    pub enabled: bool,
+    /// How often to SSH-poll remote hosts, in seconds. The local /proc scan is
+    /// unaffected and keeps running every poll_interval_secs.
+    pub interval_secs: u64,
+    /// ssh ConnectTimeout in seconds — how long to wait for the TCP connect
+    /// before giving up on an unreachable host.
+    pub connect_timeout_secs: u64,
+    /// Extra hosts to always scan. Hosts are also derived automatically from
+    /// open VS Code window titles ("[Dev Container: … @ host]" / "[SSH: host]"),
+    /// so this is only needed for sessions that have no such window (e.g. a bare
+    /// `ssh host` in a terminal). SSH key auth (no prompt) is required.
+    pub hosts: Vec<String>,
+}
+
+impl Default for Remote {
+    fn default() -> Self {
+        Remote {
+            enabled: true,
+            interval_secs: 5,
+            connect_timeout_secs: 3,
+            hosts: Vec::new(),
+        }
+    }
 }
 
 impl Default for Colors {
@@ -168,7 +201,7 @@ impl Default for Config {
             status_dot_size: 10,
             label_format:
                 "<span size='small' alpha='45%'>{idx}</span>  \
-                 <b>{project}</b>{dc}  \
+                 <b>{project}</b>{dc}{host}  \
                  <span size='small' alpha='65%'>{title}</span>"
                     .into(),
             max_title_len: 60,
@@ -183,6 +216,7 @@ impl Default for Config {
             colors: Colors::default(),
             shortcut: Shortcut::default(),
             beep: Beep::default(),
+            remote: Remote::default(),
         }
     }
 }
@@ -230,6 +264,7 @@ impl Config {
          #   {pid}     host process id\n\
          #   {cwd}     full working directory\n\
          #   {dc}      devcontainer marker (empty for host sessions)\n\
+         #   {host}    remote-host marker \"@host\" (empty for local sessions)\n\
          #\n\
          # position        : dock the bar to the \"top\" or \"bottom\" screen edge\n\
          # hide_when_empty : hide the bar (freeing its space) when no sessions run\n\
@@ -252,6 +287,15 @@ impl Config {
          #   usage_crit_pct     : fill turns colors.usage_high at/above this %\n\
          #   usage_max_age_secs : hide bars if data older than this (0 = never)\n\
          #   colors.usage_track/usage_low/usage_med/usage_high : bar colors\n\
+         #\n\
+         # Remote sessions ([remote]): discover Claude sessions on other hosts\n\
+         # over SSH (VS Code Remote-SSH / devcontainer-on-remote). Needs SSH key\n\
+         # auth (no password prompt). Add {host} to label_format to see the badge.\n\
+         #   enabled             : master on/off toggle\n\
+         #   interval_secs       : how often to SSH-poll (local scan is separate)\n\
+         #   connect_timeout_secs: ssh ConnectTimeout for unreachable hosts\n\
+         #   hosts               : extra hosts to scan; hosts open in a VS Code\n\
+         #                         Remote window are detected automatically\n\
          \n"
     }
 }

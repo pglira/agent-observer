@@ -1,6 +1,7 @@
 mod active_watch;
 mod config;
 mod hotkey;
+mod remote;
 mod sessions;
 
 use config::Config;
@@ -9,6 +10,7 @@ use sessions::{focus_session, Session, TitleCache, Usage};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Minimal info needed to jump to a session, in displayed order.
@@ -102,6 +104,17 @@ fn main() {
     };
 
     let cache: Rc<RefCell<TitleCache>> = Rc::new(RefCell::new(TitleCache::default()));
+    // Sessions discovered on remote hosts over SSH, refreshed by a background
+    // poller thread and merged into each scan. Behind Arc/Mutex because it is
+    // written off the GTK main loop. (Remote settings are read once at startup;
+    // changing them needs a restart, not just a config reload.)
+    let remote_snapshot: Arc<Mutex<Vec<Session>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let rcfg = cfg.borrow().remote.clone();
+        if rcfg.enabled {
+            remote::spawn_poller(rcfg, remote_snapshot.clone());
+        }
+    }
     // Status dots of `busy` sessions, refreshed on every rebuild, animated by the pulse timer.
     let busy_dots: Rc<RefCell<Vec<gtk::Widget>>> = Rc::new(RefCell::new(Vec::new()));
     // Sessions in displayed order, for the jump shortcut.
@@ -119,9 +132,11 @@ fn main() {
         let window = window.clone();
         let apply_geometry = apply_geometry.clone();
         let prev_status = prev_status.clone();
+        let remote_snapshot = remote_snapshot.clone();
         move || {
             let cfg_ref = cfg.borrow();
-            let (sessions, usage) = cache.borrow_mut().scan();
+            let remote = remote_snapshot.lock().map(|g| g.clone()).unwrap_or_default();
+            let (sessions, usage) = cache.borrow_mut().scan(&remote);
 
             beep_on_transitions(&cfg_ref.beep, &sessions, &mut prev_status.borrow_mut());
 
@@ -343,14 +358,28 @@ fn build_row(
     if divider {
         row.style_context().add_class("divider");
     }
+    // A remote session whose host's last SSH poll failed is shown dimmed until
+    // it ages out (see remote::STALE_GRACE).
+    if s.stale {
+        row.set_opacity(0.5);
+    }
     row.add(&hbox);
+    // Where the session lives, plus its pid — but only for local sessions: a
+    // remote session's pid is on the other machine, so it's omitted there.
+    let (location, pid) = match &s.remote_host {
+        Some(h) => (format!("  (remote: {h})"), String::new()),
+        None => (
+            if s.in_container { "  (devcontainer)".to_string() } else { String::new() },
+            format!("   pid: {}", s.host_pid),
+        ),
+    };
     row.set_tooltip_text(Some(&format!(
-        "{}{}\nstatus: {}   up: {}   pid: {}",
+        "{}{}\nstatus: {}   up: {}{}",
         s.cwd,
-        if s.in_container { "  (devcontainer)" } else { "" },
+        location,
         s.status,
         s.uptime(),
-        s.host_pid
+        pid
     )));
 
     let host_pid = s.host_pid;
@@ -480,9 +509,14 @@ fn render_label(s: &Session, cfg: &Config, idx: usize) -> String {
     };
 
     let dc = if s.in_container {
-        " <span size='x-small' alpha='55%'>\u{2b22}dc</span>".to_string()
+        " <span size='x-small' alpha='55%'>[dc]</span>".to_string()
     } else {
         String::new()
+    };
+
+    let host = match &s.remote_host {
+        Some(h) => format!(" <span size='x-small' alpha='55%'>@{}</span>", esc(h)),
+        None => String::new(),
     };
 
     // The focused session's project name is shown in the configured color.
@@ -503,6 +537,7 @@ fn render_label(s: &Session, cfg: &Config, idx: usize) -> String {
         "pid" => Some(s.host_pid.to_string()),
         "cwd" => Some(esc(&s.cwd)),
         "dc" => Some(dc.clone()),
+        "host" => Some(host.clone()),
         "idx" => Some(idx_str.clone()),
         _ => None,
     });

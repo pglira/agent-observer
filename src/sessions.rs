@@ -60,6 +60,11 @@ pub struct Session {
     pub in_container: bool,
     /// True if this session's host window is the currently-focused window.
     pub focused: bool,
+    /// Host this session was discovered on over SSH (`None` for local ones).
+    pub remote_host: Option<String>,
+    /// True when this session's host last failed an SSH poll (shown dimmed,
+    /// dropped once it has been stale too long). Always false for local ones.
+    pub stale: bool,
 }
 
 impl Session {
@@ -102,7 +107,7 @@ impl TitleCache {
     /// is read through `/proc/<pid>/root` + the process's own `$HOME`.
     /// Returns sessions sorted: `waiting` first, then by start time, plus the
     /// freshest rate-limit usage found across the discovered session homes.
-    pub fn scan(&mut self) -> (Vec<Session>, Option<Usage>) {
+    pub fn scan(&mut self, remote: &[Session]) -> (Vec<Session>, Option<Usage>) {
         let mut out = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         // (root, home) pairs to probe for a usage file. Our own home is always
@@ -166,8 +171,6 @@ impl TitleCache {
 
             let title = self.title_for(&root, &home, &reg);
             let container = in_container(pid);
-            let project = basename(&reg.cwd);
-            let focused = is_focused(&wins, active, pid, project, container);
             out.push(Session {
                 host_pid: pid,
                 session_id: reg.session_id,
@@ -176,20 +179,37 @@ impl TitleCache {
                 started_at: reg.started_at,
                 title,
                 in_container: container,
-                focused,
+                focused: false,
+                remote_host: None,
+                stale: false,
             });
         }
 
+        // Merge remote (SSH-discovered) sessions, de-duped against locals by
+        // session id, then resolve focus uniformly: a session is focused when
+        // the active window's title names its project — which covers VS Code's
+        // one-process-many-windows case for local and remote rows alike.
+        for r in remote {
+            if seen.insert(r.session_id.clone()) {
+                out.push(r.clone());
+            }
+        }
+        for s in &mut out {
+            let project = basename(&s.cwd).to_string();
+            s.focused = is_focused(&wins, active, s.host_pid, &project, s.in_container);
+        }
+
+        // Stable order: `waiting` (needs you) first, then everything else by
+        // start time. Crucially, all non-waiting statuses share one rank so a
+        // session flipping busy<->idle doesn't jump position; `session_id` is
+        // the final tiebreaker so the order never depends on `/proc` readdir or
+        // the remote merge's (HashMap) iteration order.
         out.sort_by(|a, b| {
-            let rank = |s: &str| match s {
-                "waiting" => 0,
-                "busy" => 1,
-                "idle" => 2,
-                _ => 3,
-            };
+            let rank = |s: &str| if s == "waiting" { 0 } else { 1 };
             rank(&a.status)
                 .cmp(&rank(&b.status))
                 .then(a.started_at.cmp(&b.started_at))
+                .then_with(|| a.session_id.cmp(&b.session_id))
         });
         (out, read_best_usage(&homes))
     }
