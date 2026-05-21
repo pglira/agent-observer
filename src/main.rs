@@ -462,10 +462,11 @@ fn render_label(s: &Session, cfg: &Config, idx: usize) -> String {
         }
     });
 
-    // idx: [1]..[9] then [0] for the tenth; empty beyond.
+    // idx: the jump digit 1..9 then 0 for the tenth; empty beyond. Bare number
+    // so label_format controls any surrounding decoration (e.g. brackets).
     let idx_str = match idx {
-        0..=8 => format!("[{}]", idx + 1),
-        9 => "[0]".to_string(),
+        0..=8 => (idx + 1).to_string(),
+        9 => "0".to_string(),
         _ => String::new(),
     };
 

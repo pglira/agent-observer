@@ -221,7 +221,8 @@ impl Config {
         "# agent-observer configuration\n\
          #\n\
          # label_format placeholders (Pango markup; field VALUES are auto-escaped):\n\
-         #   {idx}     jump number in square brackets, e.g. [1] (empty past the 10th)\n\
+         #   {idx}     bare jump number 1..9, 0 for the 10th (empty past it); add\n\
+         #             your own brackets etc. around it here if you want\n\
          #   {project} session project (cwd basename)\n\
          #   {title}   AI title / last prompt (truncated to max_title_len)\n\
          #   {status}  busy | idle | waiting | interrupted\n\
