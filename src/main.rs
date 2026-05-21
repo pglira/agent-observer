@@ -27,17 +27,12 @@ fn main() {
 
     let cfg = Rc::new(RefCell::new(Config::load()));
 
-    // Screen geometry (primary monitor); the bar docks to the top or bottom edge.
+    // Startup geometry of the primary monitor, used only to size/place the
+    // window before it's first shown (avoids a wrong-size first map). From then
+    // on apply_geometry re-reads it each call, so the bar follows a monitor or
+    // resolution change (see the monitors-changed watch below).
     let display = gdk::Display::default().expect("no display");
-    let monitor = display
-        .primary_monitor()
-        .or_else(|| display.monitor(0))
-        .expect("no monitor");
-    let geo = monitor.geometry();
-    let screen_w = geo.width();
-    let geo_x = geo.x();
-    let geo_y = geo.y();
-    let geo_h = geo.height();
+    let (geo_x, geo_y, screen_w, _geo_h) = primary_geo(&display);
 
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
     window.set_title("agent-observer");
@@ -56,7 +51,7 @@ fn main() {
     // no visible effect. A minimum size request pins it.
     window.set_size_request(screen_w, height);
     window.set_default_size(screen_w, height);
-    window.move_(geo.x(), geo.y());
+    window.move_(geo_x, geo_y);
 
     // Styling.
     let provider = gtk::CssProvider::new();
@@ -82,6 +77,7 @@ fn main() {
         let window = window.clone();
         let row_box = row_box.clone();
         let cfg = cfg.clone();
+        let display = display.clone();
         move || {
             if !window.is_visible() {
                 return;
@@ -90,13 +86,15 @@ fn main() {
                 let c = cfg.borrow();
                 (c.bar_height, is_bottom(&c))
             };
-            let y = if bottom { geo_y + geo_h - h } else { geo_y };
-            window.set_size_request(screen_w, h);
-            row_box.set_size_request(screen_w, h);
-            window.resize(screen_w, h);
-            window.move_(geo_x, y);
+            // Re-read the (possibly changed) monitor geometry each time.
+            let (mx, my, mw, mh) = primary_geo(&display);
+            let y = if bottom { my + mh - h } else { my };
+            window.set_size_request(mw, h);
+            row_box.set_size_request(mw, h);
+            window.resize(mw, h);
+            window.move_(mx, y);
             if let Some(xid) = window_xid(&window) {
-                if let Err(e) = set_strut(xid, h, screen_w, geo_x, bottom) {
+                if let Err(e) = set_strut(xid, h, mw, mx, bottom) {
                     eprintln!("agent-observer: could not set strut: {e}");
                 }
             }
@@ -138,7 +136,7 @@ fn main() {
             if cfg_ref.hide_when_empty && sessions.is_empty() {
                 if window.is_visible() {
                     if let Some(xid) = window_xid(&window) {
-                        let _ = set_strut(xid, 0, screen_w, geo_x, false);
+                        let _ = set_strut(xid, 0, 0, 0, false); // height 0 frees the space
                     }
                     window.hide();
                 }
@@ -275,6 +273,17 @@ fn main() {
         if let Err(e) = active_watch::setup(on_change) {
             eprintln!("agent-observer: active-window watch disabled: {e}");
         }
+    }
+
+    // Follow monitor/resolution changes: re-stretch the bar to the new primary
+    // monitor's width and re-place it. Both signals fire on RandR changes.
+    {
+        let on_monitors = {
+            let apply_geometry = apply_geometry.clone();
+            move |_: &gdk::Screen| apply_geometry()
+        };
+        screen.connect_monitors_changed(on_monitors.clone());
+        screen.connect_size_changed(on_monitors);
     }
 
     gtk::main();
@@ -648,6 +657,17 @@ fn set_strut(
 /// Whether the bar is configured to dock to the bottom edge (default: top).
 fn is_bottom(cfg: &Config) -> bool {
     cfg.position.eq_ignore_ascii_case("bottom")
+}
+
+/// Geometry (x, y, width, height) of the monitor the bar lives on — the
+/// primary, falling back to the first. Re-queried so the bar tracks changes.
+fn primary_geo(display: &gdk::Display) -> (i32, i32, i32, i32) {
+    let monitor = display
+        .primary_monitor()
+        .or_else(|| display.monitor(0))
+        .expect("no monitor");
+    let g = monitor.geometry();
+    (g.x(), g.y(), g.width(), g.height())
 }
 
 /// The X11 window id of a realized GTK window, if it has one.
