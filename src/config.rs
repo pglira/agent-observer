@@ -16,8 +16,9 @@ pub struct Config {
     /// How often to re-scan the session registry, in seconds.
     pub poll_interval_secs: u64,
 
-    /// Thickness of the line drawn along the bottom of the bar, in pixels.
-    pub bottom_line_width: i32,
+    /// Thickness in pixels of the accent line along the bar's inner edge
+    /// (bottom edge when docked top, top edge when docked bottom).
+    pub line_width: i32,
     /// Width of the separator drawn between sessions, in pixels.
     pub separator_width: i32,
 
@@ -138,7 +139,7 @@ impl Default for Config {
             position: "top".into(),
             hide_when_empty: true,
             poll_interval_secs: 1,
-            bottom_line_width: 5,
+            line_width: 5,
             separator_width: 5,
             font_family: "Sans".into(),
             font_size: 10,
@@ -211,7 +212,7 @@ impl Config {
          # status_dot_size : diameter in px of the status circle before each session\n\
          # colors.focused : {project} color of the currently-focused session\n\
          # colors.line    : bottom line AND the inter-session separators\n\
-         # bottom_line_width / separator_width : thickness in px\n\
+         # line_width / separator_width : thickness in px\n\
          # shortcut.prefix: press it, then 1..9/0 to jump. GLOBAL grab \u{2014}\n\
          #                  change it if it clashes with tmux's ctrl+b.\n\
          #\n\

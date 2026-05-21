@@ -564,7 +564,7 @@ fn apply_css(provider: &gtk::CssProvider, cfg: &Config) {
         family = family,
         size = size,
         line = c.line,
-        line_w = cfg.bottom_line_width.max(0),
+        line_w = cfg.line_width.max(0),
         sep_w = cfg.separator_width.max(0),
         edge = edge,
         unknown = c.unknown,
