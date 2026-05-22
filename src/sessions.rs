@@ -355,22 +355,20 @@ pub fn focus_session(host_pid: i32, project: &str, in_container: bool) -> bool {
 ///
 /// A single VS Code process backs every workspace window, so process ancestry
 /// can't tell them apart — the title is the only discriminator. We therefore
-/// (1) prefer a VS Code window whose title contains the project, then
+/// (1) prefer a VS Code window whose title names the project, then
 /// (2) for host sessions, walk the process ancestry (works for terminals,
 ///     which own a unique window), then
-/// (3) fall back to any window mentioning the project.
+/// (3) fall back to any window naming the project.
 fn window_for<'a>(
     wins: &'a [Win],
     host_pid: i32,
     project: &str,
     in_container: bool,
 ) -> Option<&'a Win> {
-    let needle = project.to_lowercase();
-
     if !project.is_empty() {
         if let Some(w) = wins.iter().find(|w| {
-            let t = w.title.to_lowercase();
-            t.contains("visual studio code") && t.contains(&needle)
+            w.title.to_lowercase().contains("visual studio code")
+                && title_names_project(&w.title, project)
         }) {
             return Some(w);
         }
@@ -387,13 +385,13 @@ fn window_for<'a>(
     if project.is_empty() {
         return None;
     }
-    wins.iter().find(|w| w.title.to_lowercase().contains(&needle))
+    wins.iter().find(|w| title_names_project(&w.title, project))
 }
 
 /// Is the active window attributable to this session?
 ///
-/// Primary signal: the active window's title contains the project name (covers
-/// VS Code's many-windows-one-process case). Fallback for terminals: the active
+/// Primary signal: the active window's title names the project (covers VS
+/// Code's many-windows-one-process case). Fallback for terminals: the active
 /// window is the *unique* window owned by a pid in the session's ancestry.
 fn is_focused(
     wins: &[Win],
@@ -407,7 +405,7 @@ fn is_focused(
         return false;
     };
 
-    if !project.is_empty() && aw.title.to_lowercase().contains(&project.to_lowercase()) {
+    if title_names_project(&aw.title, project) {
         return true;
     }
 
@@ -415,6 +413,50 @@ fn is_focused(
         return ancestry(host_pid).any(|pid| pid == aw.pid);
     }
     false
+}
+
+/// Does this window title name the given project? Matches the project as a
+/// whole token, so "slamlab" does not match the window for "slamlab-paper".
+/// VS Code's bracketed remote indicator ("[Dev Container: … @ host]" / "[SSH:
+/// host]") is stripped first: its human-chosen label can coincidentally contain
+/// a project name (e.g. "[Dev Container: SLAMLAB Development @ …]"). Empty
+/// project never matches; comparison is case-insensitive.
+fn title_names_project(title: &str, project: &str) -> bool {
+    if project.is_empty() {
+        return false;
+    }
+    let haystack = strip_brackets(title).to_lowercase();
+    let needle = project.to_lowercase();
+    // A folder name is bounded by non-name characters; treat alphanumerics and
+    // the usual path/identifier punctuation as "inside a name".
+    let is_name_char = |c: char| c.is_alphanumeric() || matches!(c, '-' | '_' | '.');
+    let mut from = 0;
+    while let Some(rel) = haystack[from..].find(&needle) {
+        let i = from + rel;
+        let before = haystack[..i].chars().next_back();
+        let after = haystack[i + needle.len()..].chars().next();
+        if !before.is_some_and(is_name_char) && !after.is_some_and(is_name_char) {
+            return true;
+        }
+        from = i + 1;
+    }
+    false
+}
+
+/// Drop "[…]" segments from a window title — these hold VS Code's remote
+/// indicators, whose label is unrelated to (but can echo) the folder name.
+fn strip_brackets(title: &str) -> String {
+    let mut out = String::with_capacity(title.len());
+    let mut depth = 0u32;
+    for c in title.chars() {
+        match c {
+            '[' => depth += 1,
+            ']' if depth > 0 => depth -= 1,
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// A process's pid and its ancestors (host_pid, parent, grandparent, …), up to
