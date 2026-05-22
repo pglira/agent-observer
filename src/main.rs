@@ -358,6 +358,21 @@ fn build_row(
     if divider {
         row.style_context().add_class("divider");
     }
+    // Recency glow: a non-busy (done) row starts at colors.idle_tint and fades
+    // to the bar background over idle_tint_secs, so a just-finished session
+    // glows and cools back to normal. The color is dynamic (recomputed every
+    // rebuild from idle_secs), so it's applied as a per-row CSS provider rather
+    // than a static class.
+    if let Some(color) = idle_tint_color(s, cfg) {
+        let prov = gtk::CssProvider::new();
+        if prov
+            .load_from_data(format!(".row {{ background-color: {color}; }}").as_bytes())
+            .is_ok()
+        {
+            row.style_context()
+                .add_provider(&prov, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+        }
+    }
     // A remote session whose host's last SSH poll failed is shown dimmed until
     // it ages out (see remote::STALE_GRACE).
     if s.stale {
@@ -576,6 +591,45 @@ fn render_template(fmt: &str, lookup: impl Fn(&str) -> Option<String>) -> String
     out
 }
 
+/// The row background for a session's recency glow, or `None` when the row
+/// should stay transparent: it's `busy` (the agent is working, not done), the
+/// glow is disabled (`idle_tint_secs == 0`), or it has fully cooled back to the
+/// bar background. Linear fade from `colors.idle_tint` (t=0) to
+/// `colors.background` (t=idle_tint_secs).
+fn idle_tint_color(s: &Session, cfg: &Config) -> Option<String> {
+    if s.status == "busy" || cfg.idle_tint_secs == 0 {
+        return None;
+    }
+    let t = s.idle_secs() as f64 / cfg.idle_tint_secs as f64;
+    if t >= 1.0 {
+        return None;
+    }
+    lerp_hex(&cfg.colors.idle_tint, &cfg.colors.background, t)
+}
+
+/// Parse a `#rrggbb` string into RGB bytes.
+fn parse_hex(s: &str) -> Option<(u8, u8, u8)> {
+    let h = s.trim().strip_prefix('#')?;
+    if h.len() != 6 {
+        return None;
+    }
+    Some((
+        u8::from_str_radix(&h[0..2], 16).ok()?,
+        u8::from_str_radix(&h[2..4], 16).ok()?,
+        u8::from_str_radix(&h[4..6], 16).ok()?,
+    ))
+}
+
+/// Linear interpolation between two `#rrggbb` colors at `t` in [0, 1], returned
+/// as `#rrggbb`. `None` if either input isn't a 6-digit hex color.
+fn lerp_hex(from: &str, to: &str, t: f64) -> Option<String> {
+    let (fr, fg, fb) = parse_hex(from)?;
+    let (tr, tg, tb) = parse_hex(to)?;
+    let t = t.clamp(0.0, 1.0);
+    let mix = |a: u8, b: u8| (a as f64 + (b as f64 - a as f64) * t).round() as u8;
+    Some(format!("#{:02x}{:02x}{:02x}", mix(fr, tr), mix(fg, tg), mix(fb, tb)))
+}
+
 /// The configured color for a session status (used to fill the status dot).
 fn status_color<'a>(status: &str, cfg: &'a Config) -> &'a str {
     match status {
@@ -601,7 +655,6 @@ fn apply_css(provider: &gtk::CssProvider, cfg: &Config) {
             markup in render_label so the focused-name color can override it. */\n\
          #rowbox {{ background-color: {bg}; border-{edge}: {line_w}px solid {line}; }}\n\
          label {{ font-family: {family}; font-size: {size}pt; }}\n\
-         .row:hover {{ background-color: alpha({text}, 0.10); }}\n\
          .divider {{ border-right: {sep_w}px solid {line}; }}\n\
          .usage-box {{ border-left: {sep_w}px solid {line}; padding-left: 8px; }}\n\
          .empty {{ color: {unknown}; }}\n\
@@ -611,7 +664,6 @@ fn apply_css(provider: &gtk::CssProvider, cfg: &Config) {
          .usage-med {{ background-color: {usage_med}; }}\n\
          .usage-high {{ background-color: {usage_high}; }}\n",
         bg = c.background,
-        text = c.text,
         family = family,
         size = size,
         line = c.line,

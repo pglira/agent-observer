@@ -15,6 +15,10 @@ pub struct RegistryEntry {
     pub kind: Option<String>,
     #[serde(rename = "startedAt", default)]
     pub started_at: u64,
+    /// When the session's status last changed (ms since epoch). For a non-busy
+    /// session this is when the agent stopped working — the idle-glow's t=0.
+    #[serde(rename = "updatedAt", default)]
+    pub updated_at: u64,
 }
 
 /// One rate-limit window from the usage file (the `resets_at` key is also
@@ -55,6 +59,9 @@ pub struct Session {
     pub cwd: String,
     pub status: String,
     pub started_at: u64,
+    /// When the status last changed (ms since epoch); 0 if unknown. For a
+    /// non-busy session, `now - updated_at` is how long the agent has been done.
+    pub updated_at: u64,
     pub title: Option<String>,
     /// True if the session runs inside a container (different mount namespace).
     pub in_container: bool,
@@ -75,10 +82,7 @@ impl Session {
 
     /// Uptime in a short human form, e.g. "12m", "3h04m".
     pub fn uptime(&self) -> String {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now = now_ms();
         if self.started_at == 0 || now < self.started_at {
             return "—".into();
         }
@@ -92,6 +96,26 @@ impl Session {
             format!("{secs}s")
         }
     }
+
+    /// Seconds since the status last changed (`updated_at`). For a non-busy
+    /// session this is how long the agent has been done. 0 if `updated_at` is
+    /// unknown or in the future (e.g. remote clock skew).
+    pub fn idle_secs(&self) -> u64 {
+        let now = now_ms();
+        if self.updated_at == 0 || now < self.updated_at {
+            return 0;
+        }
+        (now - self.updated_at) / 1000
+    }
+}
+
+/// Current time in milliseconds since the Unix epoch (0 if the system clock is
+/// somehow before the epoch).
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Caches AI titles per session, keyed by transcript mtime so we only re-read
@@ -177,6 +201,7 @@ impl TitleCache {
                 cwd: reg.cwd,
                 status: reg.status.unwrap_or_else(|| "unknown".into()),
                 started_at: reg.started_at,
+                updated_at: reg.updated_at,
                 title,
                 in_container: container,
                 focused: false,

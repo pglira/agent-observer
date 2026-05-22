@@ -40,6 +40,13 @@ pub struct Config {
     /// Pulse the status dot of `busy` sessions.
     pub pulse_busy: bool,
 
+    /// Recency glow: when a session is not `busy` (the agent is done — idle,
+    /// waiting, interrupted, …) its row background starts at `colors.idle_tint`
+    /// and fades linearly to `colors.background` over this many seconds. So a
+    /// just-finished session glows brightly and cools back to normal.
+    /// 0 = disabled (no glow).
+    pub idle_tint_secs: u64,
+
     /// Show the 5h / weekly rate-limit bars on the far right of the bar.
     /// Requires the Claude Code status line to emit `rate_limits` to
     /// `~/.claude/agent-observer-usage.json` (see install.sh / statusline).
@@ -82,6 +89,9 @@ pub struct Colors {
     pub text: String,
     /// {project} color of the currently-focused session.
     pub focused: String,
+    /// Row background of a just-finished session, faded to `background` over
+    /// `idle_tint_secs` (see that field). The t=0 (full-glow) color.
+    pub idle_tint: String,
     /// Bottom line AND inter-session separator color.
     pub line: String,
     /// Empty (background) part of a usage bar.
@@ -160,6 +170,7 @@ impl Default for Colors {
             background: "#0d1117".into(),
             text: "#e6edf3".into(),
             focused: "#f2cc60".into(),     // yellow
+            idle_tint: "#238636".into(),   // muted green (just-finished glow)
             line: "#2f81f7".into(),        // blue
             usage_track: "#30363d".into(), // dim grey
             usage_low: "#3fb950".into(),   // green
@@ -206,6 +217,7 @@ impl Default for Config {
                     .into(),
             max_title_len: 60,
             pulse_busy: true,
+            idle_tint_secs: 120,
             show_usage: true,
             usage_bar_width: 70,
             usage_label_5h: "5h".into(),
@@ -269,6 +281,10 @@ impl Config {
          # position        : dock the bar to the \"top\" or \"bottom\" screen edge\n\
          # hide_when_empty : hide the bar (freeing its space) when no sessions run\n\
          # status_dot_size : diameter in px of the status circle before each session\n\
+         # idle_tint_secs  : a non-busy (done) session's row glows colors.idle_tint\n\
+         #                   and fades to colors.background over this many seconds\n\
+         #                   (just-finished = brightest). 0 disables the glow.\n\
+         # colors.idle_tint: the t=0 (full-glow) row background for that fade\n\
          # colors.focused : {project} color of the currently-focused session\n\
          # colors.line    : bottom line AND the inter-session separators\n\
          # line_width / separator_width : thickness in px\n\

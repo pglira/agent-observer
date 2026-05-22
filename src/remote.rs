@@ -166,6 +166,7 @@ fn scan_host(host: &str, connect_timeout: u64) -> Result<Vec<Session>, ()> {
             cwd: reg.cwd,
             status: reg.status.unwrap_or_else(|| "unknown".into()),
             started_at: reg.started_at,
+            updated_at: reg.updated_at,
             title: title_from_line(title_line),
             in_container: true, // forces window_for's title-match focus path
             focused: false,
