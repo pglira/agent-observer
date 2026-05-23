@@ -213,7 +213,7 @@ fn derive_hosts(static_hosts: &[String]) -> HashSet<String> {
 /// Extract the remote host from a VS Code window title:
 /// "… [Dev Container: <name> @ <host>] …" or "… [SSH: <host>] …".
 /// A local devcontainer (no "@ host") yields `None` — /proc already sees it.
-fn host_from_title(title: &str) -> Option<String> {
+pub(crate) fn host_from_title(title: &str) -> Option<String> {
     if let Some(i) = title.find("[Dev Container:") {
         if let Some(at) = title[i..].find("@ ") {
             if let Some(host) = bracketed_host(&title[i + at + 2..]) {

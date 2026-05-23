@@ -80,6 +80,17 @@ impl Session {
         basename(&self.cwd)
     }
 
+    /// A borrowing view of just the fields needed to find or recognise this
+    /// session's window. See [`WindowQuery`].
+    pub fn window_query(&self) -> WindowQuery<'_> {
+        WindowQuery {
+            host_pid: self.host_pid,
+            project: self.project(),
+            in_container: self.in_container,
+            remote_host: self.remote_host.as_deref(),
+        }
+    }
+
     /// Uptime in a short human form, e.g. "12m", "3h04m".
     pub fn uptime(&self) -> String {
         let now = now_ms();
@@ -220,8 +231,7 @@ impl TitleCache {
             }
         }
         for s in &mut out {
-            let project = basename(&s.cwd).to_string();
-            s.focused = is_focused(&wins, active, s.host_pid, &project, s.in_container);
+            s.focused = is_focused(&wins, active, s.window_query());
         }
 
         // Stable order: `waiting` (needs you) first, then everything else by
@@ -367,75 +377,104 @@ fn basename(path: &str) -> &str {
         .unwrap_or(path)
 }
 
+/// The fields needed to find or recognise a session's window. A single VS Code
+/// process backs every workspace window, so we can't tell them apart by pid;
+/// the window title (project name + remote indicator) is the discriminator,
+/// with process ancestry as a terminal-only fallback. Borrowed, so it's cheap
+/// to pass around — build one with [`Session::window_query`].
+#[derive(Clone, Copy)]
+pub struct WindowQuery<'a> {
+    /// Host-side pid of the `claude` process (used for the ancestry fallback).
+    pub host_pid: i32,
+    /// Project (cwd basename) the window's title must name.
+    pub project: &'a str,
+    /// Whether the session runs in a container (disables the ancestry fallback,
+    /// whose pids live in another namespace).
+    pub in_container: bool,
+    /// Host the session lives on (`None` = local); the window's remote indicator
+    /// must agree. See [`window_on_host`].
+    pub remote_host: Option<&'a str>,
+}
+
 /// Raise/focus the window hosting a session.
-pub fn focus_session(host_pid: i32, project: &str, in_container: bool) -> bool {
+pub fn focus_session(q: WindowQuery) -> bool {
     let wins = list_windows();
-    match window_for(&wins, host_pid, project, in_container) {
+    match window_for(&wins, q) {
         Some(w) => activate(&w.id),
         None => false,
     }
 }
 
-/// Find the window hosting a session.
-///
-/// A single VS Code process backs every workspace window, so process ancestry
-/// can't tell them apart — the title is the only discriminator. We therefore
-/// (1) prefer a VS Code window whose title names the project, then
+/// Find the window hosting a session. We
+/// (1) prefer a VS Code window whose title matches the session (project name
+///     *and* remote indicator, so the same folder open both locally and in a
+///     remote/devcontainer window doesn't focus the wrong one), then
 /// (2) for host sessions, walk the process ancestry (works for terminals,
 ///     which own a unique window), then
-/// (3) fall back to any window naming the project.
-fn window_for<'a>(
-    wins: &'a [Win],
-    host_pid: i32,
-    project: &str,
-    in_container: bool,
-) -> Option<&'a Win> {
-    if !project.is_empty() {
+/// (3) fall back to any window matching the session.
+fn window_for<'a>(wins: &'a [Win], q: WindowQuery) -> Option<&'a Win> {
+    if !q.project.is_empty() {
         if let Some(w) = wins.iter().find(|w| {
-            w.title.to_lowercase().contains("visual studio code")
-                && title_names_project(&w.title, project)
+            w.title.to_lowercase().contains("visual studio code") && window_matches(&w.title, q)
         }) {
             return Some(w);
         }
     }
 
-    if !in_container {
+    if !q.in_container {
         if let Some(w) =
-            ancestry(host_pid).find_map(|pid| wins.iter().find(|w| w.pid == pid))
+            ancestry(q.host_pid).find_map(|pid| wins.iter().find(|w| w.pid == pid))
         {
             return Some(w);
         }
     }
 
-    if project.is_empty() {
+    if q.project.is_empty() {
         return None;
     }
-    wins.iter().find(|w| title_names_project(&w.title, project))
+    wins.iter().find(|w| window_matches(&w.title, q))
+}
+
+/// Does this window belong to the queried session? Both must hold: the title
+/// names the project as a whole token, and the window's remote indicator agrees
+/// with where the session lives. See [`title_names_project`], [`window_on_host`].
+fn window_matches(title: &str, q: WindowQuery) -> bool {
+    title_names_project(title, q.project) && window_on_host(title, q.remote_host)
+}
+
+/// Does this window's remote indicator match the session's host? A remote
+/// session (`remote_host = Some`) belongs to the window whose "[Dev Container:
+/// … @ host]" / "[SSH: host]" names that same host; a local session
+/// (`remote_host = None`) belongs to a window with no remote indicator (a plain
+/// local window, or a *local* devcontainer with no "@ host"). This is what keeps
+/// a project opened both locally and over SSH from focusing the wrong window.
+fn window_on_host(title: &str, remote_host: Option<&str>) -> bool {
+    match (remote_host, crate::remote::host_from_title(title)) {
+        (Some(want), Some(have)) => want.eq_ignore_ascii_case(&have),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 /// Is the active window attributable to this session?
 ///
-/// Primary signal: the active window's title names the project (covers VS
-/// Code's many-windows-one-process case). Fallback for terminals: the active
-/// window is the *unique* window owned by a pid in the session's ancestry.
-fn is_focused(
-    wins: &[Win],
-    active: Option<u64>,
-    host_pid: i32,
-    project: &str,
-    in_container: bool,
-) -> bool {
+/// Primary signal: the active window matches the session — title names the
+/// project *and* its remote indicator agrees (covers VS Code's many-windows-
+/// one-process case without a local window lighting up a remote row, or vice
+/// versa). Fallback for terminals: the active window is the *unique* window
+/// owned by a pid in the session's ancestry.
+fn is_focused(wins: &[Win], active: Option<u64>, q: WindowQuery) -> bool {
     let Some(active_id) = active else { return false };
     let Some(aw) = wins.iter().find(|w| norm_winid(&w.id) == Some(active_id)) else {
         return false;
     };
 
-    if title_names_project(&aw.title, project) {
+    if window_matches(&aw.title, q) {
         return true;
     }
 
-    if !in_container && wins.iter().filter(|w| w.pid == aw.pid).count() == 1 {
-        return ancestry(host_pid).any(|pid| pid == aw.pid);
+    if !q.in_container && wins.iter().filter(|w| w.pid == aw.pid).count() == 1 {
+        return ancestry(q.host_pid).any(|pid| pid == aw.pid);
     }
     false
 }
@@ -562,4 +601,47 @@ fn parent_pid(pid: i32) -> Option<i32> {
 /// Process state char from `/proc/<pid>/stat` (e.g. 'R', 'S', 'T', 'Z').
 fn proc_state(pid: i32) -> Option<char> {
     proc_stat_after_comm(pid)?.split_whitespace().next()?.chars().next()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn win(id: &str, title: &str) -> Win {
+        Win { id: id.to_string(), pid: 0, title: title.to_string() }
+    }
+
+    fn query<'a>(project: &'a str, in_container: bool, remote_host: Option<&'a str>) -> WindowQuery<'a> {
+        WindowQuery { host_pid: 0, project, in_container, remote_host }
+    }
+
+    #[test]
+    fn host_discriminates_same_project_local_vs_remote() {
+        // Same folder open both locally and in a remote devcontainer.
+        let wins = vec![
+            win("0x1", "slamlab — Visual Studio Code"),
+            win("0x2", "slamlab [Dev Container: dev @ bigbox] — Visual Studio Code"),
+        ];
+
+        // Remote session must pick the remote window, not the first one.
+        let w = window_for(&wins, query("slamlab", true, Some("bigbox"))).unwrap();
+        assert_eq!(w.id, "0x2");
+
+        // Local session must pick the plain window. No ancestry match (pid 0),
+        // so it falls back to the title path.
+        let w = window_for(&wins, query("slamlab", false, None));
+        assert_eq!(w.unwrap().id, "0x1");
+    }
+
+    #[test]
+    fn window_on_host_matches_indicator() {
+        assert!(window_on_host("p [SSH: bigbox] — Visual Studio Code", Some("bigbox")));
+        assert!(window_on_host("p [SSH: BigBox]", Some("bigbox"))); // case-insensitive
+        assert!(!window_on_host("p [SSH: other]", Some("bigbox")));
+        assert!(!window_on_host("p — Visual Studio Code", Some("bigbox"))); // remote wants host, window has none
+        assert!(!window_on_host("p [SSH: bigbox]", None)); // local wants no host
+        assert!(window_on_host("p — Visual Studio Code", None));
+        // A local devcontainer (no "@ host") counts as local.
+        assert!(window_on_host("p [Dev Container: dev]", None));
+    }
 }

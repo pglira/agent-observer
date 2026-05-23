@@ -6,19 +6,33 @@ mod sessions;
 
 use config::Config;
 use gtk::prelude::*;
-use sessions::{focus_session, Session, TitleCache, Usage};
+use sessions::{focus_session, Session, TitleCache, Usage, WindowQuery};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Minimal info needed to jump to a session, in displayed order.
+/// Minimal info needed to jump to a session, in displayed order. Owns its
+/// fields (it outlives the `Session` it came from); lend a [`WindowQuery`] with
+/// [`NavTarget::window_query`] when calling [`focus_session`].
 #[derive(Clone)]
 struct NavTarget {
     host_pid: i32,
     project: String,
     in_container: bool,
+    remote_host: Option<String>,
+}
+
+impl NavTarget {
+    fn window_query(&self) -> WindowQuery<'_> {
+        WindowQuery {
+            host_pid: self.host_pid,
+            project: &self.project,
+            in_container: self.in_container,
+            remote_host: self.remote_host.as_deref(),
+        }
+    }
 }
 
 fn main() {
@@ -172,6 +186,7 @@ fn main() {
                         host_pid: s.host_pid,
                         project: s.project().to_string(),
                         in_container: s.in_container,
+                        remote_host: s.remote_host.clone(),
                     });
                 }
             }
@@ -271,7 +286,7 @@ fn main() {
             let nav = nav.clone();
             let jump: Rc<dyn Fn(usize)> = Rc::new(move |idx| {
                 if let Some(t) = nav.borrow().get(idx) {
-                    focus_session(t.host_pid, &t.project, t.in_container);
+                    focus_session(t.window_query());
                 }
             });
             if let Err(e) = hotkey::setup(&sc.prefix, jump) {
@@ -397,12 +412,20 @@ fn build_row(
         pid
     )));
 
+    // The closure outlives `s`, so capture owned copies and lend a borrowing
+    // `WindowQuery` from them on each click.
     let host_pid = s.host_pid;
     let project = s.project().to_string();
     let in_container = s.in_container;
+    let remote_host = s.remote_host.clone();
     row.connect_button_press_event(move |_w, ev| {
         if ev.button() == 1 {
-            focus_session(host_pid, &project, in_container);
+            focus_session(WindowQuery {
+                host_pid,
+                project: &project,
+                in_container,
+                remote_host: remote_host.as_deref(),
+            });
             return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
