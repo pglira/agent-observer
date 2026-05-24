@@ -184,7 +184,7 @@ impl Default for Beep {
     fn default() -> Self {
         Beep {
             enabled: true,
-            command: "paplay /usr/share/sounds/freedesktop/stereo/complete.oga".into(),
+            command: "paplay /usr/share/sounds/freedesktop/stereo/message.oga".into(),
         }
     }
 }
